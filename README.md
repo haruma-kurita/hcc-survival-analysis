@@ -1,38 +1,37 @@
-# Prognostic Value of CXCL17 in Hepatocellular Carcinoma
+# Prognostic Value of Peritumoral CXCL17 in Hepatocellular Carcinoma
 
 ## Overview
-This repository contains a clinical statistical analysis evaluating the association between continuous peritumoral chemokine CXC ligand 17 (CXCL17) expression and overall survival (OS) in patients with hepatocellular carcinoma (HCC). 
+This repository contains an end-to-end clinical survival analysis evaluating the independent association between continuous peritumoral chemokine CXC ligand 17 (CXCL17) expression and overall survival (OS) in patients with hepatocellular carcinoma (HCC) following curative surgical resection.
 
-The project demonstrates advanced survival analysis techniques in R, specifically addressing non-linear dose-response relationships using restricted cubic splines and resolving proportional hazards (PH) assumption violations through model stratification.
+Whereas the original published study ([Li et al., 2014](https://doi.org/10.1371/journal.pone.0110064)) dichotomized peritumoral CXCL17 expression at the sample median, this project preserves the continuous dose-response relationship. The workflow demonstrates advanced survival modeling techniques in R, specifically addressing non-linearity via restricted cubic splines, resolving proportional hazards (PH) violations through multivariable stratification, and verifying model stability via deviance and DFBETAS residual diagnostics.
 
 ## Data Source
-The analysis utilizes the `hepatoCellular` dataset from the **`asaur`** R package. The final analytic dataset consists of a complete-case cohort (n=227), which includes 97 observed mortality events.
+The analysis utilizes the `hepatoCellular` dataset from the **`asaur`** R package, derived from 227 patients who underwent curative resection for HCC at Sun Yat-sen University Cancer Center. The final complete-case analytic cohort ($n = 227$) captures 97 observed mortality events over a median follow-up of 36 months (range: 2–83 months).
 
-## Statistical Analysis Plan (SAP)
-A multivariable Cox proportional hazards regression model was developed to quantify the independent effect of peritumoral CXCL17 expression on mortality risk. 
-* **Covariate Adjustment:** The model adjusts for baseline clinical covariates including tumor multiplicity, alpha-fetoprotein (AFP), aspartate aminotransferase (AST), tumor size, vascular invasion, TNM stage, and BCLC stage.
-* **Assumption Diagnostics & Corrections:**
-  * **Linearity:** Evaluated using Martingale residuals. Non-linearity in the continuous CXCL17 exposure was corrected using restricted cubic splines (3 knots).
-  * **Proportional Hazards:** Evaluated using scaled Schoenfeld residuals. PH violations among clinical covariates were resolved by stratifying the baseline hazard by tumor multiplicity, tumor size, vascular invasion, TNM stage, and BCLC stage.
+## Statistical Methodology
+A multivariable Cox proportional hazards regression model was developed according to a pre-specified Statistical Analysis Plan (SAP) to quantify the independent effect of continuous peritumoral CXCL17 density (cells/megapixel) on overall survival:
+
+* **Covariate Adjustment:** Controlled for seven pre-specified clinical and pathological confounders: tumor multiplicity (solitary vs. multiple), serum alpha-fetoprotein (AFP: $\le 25$ vs. $> 25\text{ ng/mL}$), aspartate aminotransferase (AST: $\le 42$ vs. $> 42\text{ U/L}$), tumor size ($\le 5$ vs. $> 5\text{ cm}$), vascular invasion (absent vs. present), TNM stage (I–II vs. III–IV), and BCLC stage (0–A vs. B–C).
+* **Assumption Diagnostics & Remediations:**
+  * **Linearity (Martingale Residuals):** Null Martingale residual plots with LOWESS smoothing revealed a non-linear functional form for continuous peritumoral CXCL17 density. This was remediated by modeling CXCL17 with a **3-knot restricted cubic spline**.
+  * **Proportional Hazards (Scaled Schoenfeld Residuals):** Initial `cox.zph()` testing indicated a significant global PH violation ($\chi^2 = 17.61, p = 0.024$) driven by five categorical staging and pathology covariates ($p < 0.05$). Stratifying the baseline hazard across tumor multiplicity, tumor size, vascular invasion, TNM stage, and BCLC stage fully resolved the violation in the final model (global $\chi^2 = 3.21, \text{df} = 4, p = 0.52$; all individual $p > 0.10$).
+  * **Outliers & Influential Observations (Deviance & DFBETAS Residuals):** Deviance residuals were symmetrically bounded between $-1.79$ and $2.72$ (within $\pm 3.0$), and maximum absolute DFBETAS across all parameters were $< 0.25$, confirming no extreme outliers or unduly influential observations.
 
 ## Key Findings
-* **Primary Contrast:** When comparing patients at the 75th percentile of CXCL17 expression to those at the 25th percentile, the spline-adjusted model yielded a hazard ratio of 1.42 (95% CI: 0.85, 2.38; p = 0.186). 
-* **Conclusion:** Because the confidence interval crosses 1.0 and the p-value is greater than 0.05, continuous peritumoral CXCL17 expression did not demonstrate statistically significant independent prognostic value when rigorously adjusted for standard clinical confounders. 
-* **Secondary Findings:** Elevated alpha-fetoprotein (AFP Level 2) emerged as a highly significant independent predictor of poorer overall survival (HR = 2.63, p = 0.00045).
+* **Primary Biomarker Contrast (75th vs. 25th Percentile):** Comparing patients at the 75th percentile of peritumoral CXCL17 density ($141.5\text{ cells/megapixel}$) to those at the 25th percentile ($15.4\text{ cells/megapixel}$) yielded a spline-adjusted hazard ratio of **1.42 (95% CI: 0.85, 2.38; $p = 0.186$)**.
+* **Clinical Conclusion:** Because the 95% confidence interval spans 1.0, continuous peritumoral CXCL17 expression does not demonstrate statistically significant independent prognostic value for overall survival once non-linearity and non-proportional clinical confounders are properly accounted for. This suggests that the significant association reported in the original dichotomized analysis ($\text{HR} = 2.07, p = 0.002$) may have been sensitive to median cut-point categorization and unaddressed PH violations.
+* **Secondary Clinical Predictors:** Among unstratified covariates, elevated preoperative serum **AFP ($> 25\text{ ng/mL}$)** remained a strong, statistically significant independent predictor of mortality (**HR = 2.63; 95% CI: 1.53, 4.52; $p < 0.001$**), whereas elevated **AST ($> 42\text{ U/L}$)** was not significantly associated with overall survival (**HR = 1.21; 95% CI: 0.76, 1.92; $p = 0.422$**).
 
 ## Repository Structure
-* `HCC_CXCL17_Survival_Analysis.R`: The primary execution script containing data preparation, descriptive statistics (Table 1), modeling, contrast estimation, and diagnostic testing.
-* `output/`: Directory containing generated clinical and diagnostic visuals.
-  * `Table1_Baseline_Characteristics`
-  * `Fig1_Adjusted_Survival_Curves.png`
-  * `Fig2_Schoenfeld_Residuals.png` (PH Assumption Check)
-  * `Fig3_Martingale_Residuals.png` (Linearity Assumption Check)
-
-## Technologies & Packages
-* **Language:** R
-* **Packages:** `survival`, `survminer` (Modeling and Kaplan-Meier visuals) | `gtsummary` (Clinical table generation) | `Hmisc` (Restricted cubic splines) | `doBy` (Contrast matrices/esticon) | `dplyr` (Data wrangling)
-
-## Author
-**Haruma Kurita**  
-Master of Biostatistics Candidate  
-Duke University School of Medicine, Department of Biostatistics & Bioinformatics
+```text
+├── 01_Project_Script.R              # Primary R script: data prep, Table 1, Cox modeling, contrasts, & plots
+├── Statistical_Analysis_Plan.pdf    # Pre-specified SAP detailing study aims, hypotheses, and methods
+├── Analysis_Report.pdf              # Final clinical report with executive summary, results, and critique
+├── output/                          # Generated publication-quality tables and diagnostic figures
+│   ├── Table1_Baseline_Characteristics.png
+│   ├── Fig1_Adjusted_Survival_Curves.png
+│   ├── AppFig1_Martingale_Residuals.png
+│   ├── AppFig2_Schoenfeld_Residuals.png
+│   ├── AppFig3_Deviance_Residuals.png
+│   └── AppFig4_DFBETAS_Residuals.png
+└── README.md
