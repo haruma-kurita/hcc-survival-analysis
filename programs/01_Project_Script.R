@@ -3,7 +3,7 @@
 # Project:        Prognostic Value of CXCL17 in Hepatocellular Carcinoma (SAP Execution)
 # Author:         Haruma Kurita
 # Institution:    Duke University, Department of Biostatistics & Bioinformatics
-# Date:           November 3, 2026
+# Date:           November 5, 2026
 #
 # Description:    Evaluates the association between continuous peritumoral CXCL17 
 #                 expression and overall survival (OS) in HCC complete cases (n=227). 
@@ -12,190 +12,197 @@
 #                 stratification for clinical covariates to satisfy PH assumptions.
 #
 # Input Data:     hepatoCellular (via 'asaur' package)
-# Outputs:        - Table 1: Baseline Characteristics (gtsummary)
-#                 - Figure 1: Adjusted KM Survival Curves (75th vs 25th percentile)
-#                 - Appendix: Model Diagnostics (Schoenfeld & Martingale residuals)
+# Outputs:        - Table 1: Descriptive Statistics of the Sample (gtsummary)
+#                 - Figure 1: Covariate-Adjusted Survival Curves (75th vs 25th percentile)
+#                 - Appendix Figures: Model Diagnostics (Martingale, Schoenfeld, 
+#                   Deviance, and DFBETAS residuals)
 #
 # Disclosure:     Code structuring, troubleshooting, and formatting assisted by 
 #                 Google Gemini.
 # ==============================================================================
 
 # 1. SETUP & DATA PREPARATION
-library(gtsummary)
-library(survival)
-library(survminer)
-library(doBy) 
-library(asaur)
-library(dplyr)
-library(Hmisc)
+library(gtsummary) # Publication-ready baseline (Table 1) and regression tables
+library(survival)  # Core survival objects, stratified Cox PH models, and PH tests
+library(survminer) # Survival curves (ggsurvplot) and residual diagnostic plots
+library(doBy)      # Linear contrast estimation (esticon) for spline hazard ratios
+library(asaur)     # Source of the 'hepatoCellular' clinical dataset
+library(dplyr)     # Data cleaning, variable selection, and factor recoding
+library(Hmisc)     # Restricted cubic spline basis generation (rcspline.eval)
 
 data("hepatoCellular")
 
-# Data Cleaning
+# Data Cleaning & Meaningful Factor Labeling for Publication-Quality Outputs
 df_clean <- hepatoCellular |> 
   select(OS, Death, CXCL17P, Tumormultiplicity, AFP, AST, Tumorsize, Vascularinvasion, TNM, BCLC) |> 
-  na.omit()
-
-# Convert clinical covariates to factors (reference cell coding)
-df_clean <- df_clean %>%
-  mutate(across(c(Tumormultiplicity, AFP, AST, Tumorsize, Vascularinvasion, TNM, BCLC), as.factor))
+  na.omit() |>
+  mutate(
+    Tumormultiplicity = factor(Tumormultiplicity, levels = c(1, 2), labels = c("Solitary", "Multiple")),
+    AFP               = factor(AFP, levels = c(1, 2), labels = c("<= 25 ng/mL", "> 25 ng/mL")),
+    AST               = factor(AST, levels = c(1, 2), labels = c("<= 42 U/L", "> 42 U/L")),
+    Tumorsize         = factor(Tumorsize, levels = c(1, 2), labels = c("<= 5 cm", "> 5 cm")),
+    Vascularinvasion  = factor(Vascularinvasion, levels = c(0, 1), labels = c("Absent", "Present")),
+    TNM               = factor(TNM, levels = c(1, 2), labels = c("Stage I-II", "Stage III-IV")),
+    BCLC              = factor(BCLC, levels = c(1, 2), labels = c("Stage 0-A", "Stage B-C"))
+  )
 
 summary(df_clean)
+sum(df_clean$Death) # Confirm total death events (n = 97)
 
-# Generate Table 1: Baseline Characteristics
+# ------------------------------------------------------------------------------
+# 2. TABLE 1: DESCRIPTIVE STATISTICS OF THE SAMPLE
+# ------------------------------------------------------------------------------
+# Helper functions so gtsummary uses base R's default quantile (type = 7)
+q25 <- function(x) quantile(x, 0.25, type = 7)
+q75 <- function(x) quantile(x, 0.75, type = 7)
+
 table_1 <- df_clean |>
   select(CXCL17P, Tumormultiplicity, AFP, AST, Tumorsize, Vascularinvasion, TNM, BCLC) |>
   tbl_summary(
     statistic = list(
-      all_continuous() ~ "{median} ({p25}, {p75})",
+      all_continuous() ~ "{median} ({q25}, {q75})",
       all_categorical() ~ "{n} ({p}%)"
     ),
+    digits = list(all_continuous() ~ 1), # Shows 46.4 (15.4, 141.5)
     label = list(
-      CXCL17P ~ "Peritumoral CXCL17 Expression",
+      CXCL17P           ~ "Peritumoral CXCL17 Density (cells/megapixel)",
       Tumormultiplicity ~ "Tumor Multiplicity",
-      Tumorsize ~ "Tumor Size",
-      Vascularinvasion ~ "Vascular Invasion",
-      TNM ~ "TNM Stage",
-      BCLC ~ "BCLC Stage"
+      AFP               ~ "Alpha-Fetoprotein (AFP)",
+      AST               ~ "Aspartate Aminotransferase (AST)",
+      Tumorsize         ~ "Tumor Size",
+      Vascularinvasion  ~ "Vascular Invasion",
+      TNM               ~ "TNM Stage",
+      BCLC              ~ "BCLC Stage"
     )
   ) |>
-  add_n() |> # Adds a column showing total valid N for each variable
   modify_header(label = "**Baseline Characteristic**") |>
   bold_labels()
 
-# Print Table 1 to the Viewer pane
 table_1
 
-# 2. AIM 1: INITIAL MULTIVARIABLE COX MODEL
-# Fit the initial unadjusted Cox proportional hazards model
-cox_model <- coxph(Surv(df_clean$OS, df_clean$Death) ~ CXCL17P + Tumormultiplicity + AFP + AST + Tumorsize + 
-                     Vascularinvasion + TNM + BCLC, data = df_clean)
-
-summary(cox_model)
-
-# 3. INITIAL CONTRAST: 75th vs 25th Percentile of CXCL17P
-# Get IQR specifically for CXCL17P
-q1_cxcl <- quantile(df_clean$CXCL17P, 0.25)
-q3_cxcl <- quantile(df_clean$CXCL17P, 0.75)
-L_matrix <- rbind(c(q3_cxcl - q1_cxcl, 0, 0, 0, 0, 0, 0, 0))
-
-# Calculate and print the contrast estimate, CI, and p-value
-cxcl_contrast <- esticon(cox_model, L_matrix, conf.int = TRUE)
-print(cxcl_contrast)
-
-# Print exponentiated Hazard Ratio and CI for interpretation
-paste0("Initial Hazard Ratio for 75th vs 25th Percentile: ",
-       round(exp(cxcl_contrast$estimate), 2), " (",
-       round(exp(cxcl_contrast$lwr), 2), ", ",
-       round(exp(cxcl_contrast$upr), 2), ")")
-
-# 4. INITIAL VISUAL: ADJUSTED SURVIVAL CURVES (Average Patient Approach)
-new_data_plot <- data.frame(
-  CXCL17P = c(q1_cxcl, q3_cxcl),
-  Tumormultiplicity = factor(c(1, 1), levels = levels(df_clean$Tumormultiplicity)),
-  AFP = factor(c(1, 1), levels = levels(df_clean$AFP)),
-  AST = factor(c(1, 1), levels = levels(df_clean$AST)),
-  Tumorsize = factor(c(1, 1), levels = levels(df_clean$Tumorsize)),
-  Vascularinvasion = factor(c(0, 0), levels = levels(df_clean$Vascularinvasion)),
-  TNM = factor(c(1, 1), levels = levels(df_clean$TNM)),
-  BCLC = factor(c(1, 1), levels = levels(df_clean$BCLC))
+# ------------------------------------------------------------------------------
+# 3. INITIAL MULTIVARIABLE COX MODEL & ASSUMPTION DIAGNOSTICS
+# ------------------------------------------------------------------------------
+cox_model_initial <- coxph(
+  Surv(OS, Death) ~ CXCL17P + Tumormultiplicity + AFP + AST + 
+    Tumorsize + Vascularinvasion + TNM + BCLC, 
+  data = df_clean
 )
 
-surv_avg <- survfit(cox_model, newdata = new_data_plot)
+summary(cox_model_initial)
 
-ggsurvplot(surv_avg, data = new_data_plot,
-           legend.title = "CXCL17P Percentile",
-           legend.labs = c("25th Percentile", "75th Percentile"))
+# 3a. Initial Proportional Hazards Check (Scaled Schoenfeld Residuals)
+ph_test_initial <- cox.zph(cox_model_initial)
+print(ph_test_initial)
+ggcoxzph(ph_test_initial)
 
-# 5. DIAGNOSTICS & ASSUMPTIONS (INITIAL MODEL)
-# 5a. Proportional Hazards: Scaled Schoenfeld Residuals
-ph_test <- cox.zph(cox_model)
-print(ph_test)
-ggcoxzph(ph_test)
+# 3b. Appendix Figure 1: Linearity Check (Null Model Martingale Residuals)
+ggcoxfunctional(
+  Surv(OS, Death) ~ CXCL17P, 
+  data = df_clean,
+  xlab = "Peritumoral CXCL17 Density (cells/megapixel)"
+)
 
-# 5b. Linearity of Continuous Predictor: Null Martingale Residuals
-ggcoxfunctional(Surv(OS, Death) ~ CXCL17P, data = df_clean)
+# ------------------------------------------------------------------------------
+# 4. REMEDIATED FINAL MODEL (SPLINES + STRATIFICATION)
+# ------------------------------------------------------------------------------
+# 4a. Generate Restricted Cubic Splines for CXCL17P (3 knots)
+spline_cov <- rcspline.eval(df_clean$CXCL17P, nk = 3, norm = 0)
+knots      <- attr(spline_cov, "knots")
 
-# 5c. Outliers: Deviance Residuals
-ggcoxdiagnostics(cox_model, 
-                 type = "deviance", 
-                 ox.scale = "linear.predictions")
-
-# 5d. Influential Points: DFBETAS
-ggcoxdiagnostics(cox_model, 
-                 type = "dfbetas", 
-                 ox.scale = "observation.id")
-
-# ---------------------------------------------------------
-# 6. UPDATED MODEL: FIXING LINEARITY & PROPORTIONAL HAZARDS
-# ---------------------------------------------------------
-
-# 6a. Fix Linearity: Generate Restricted Cubic Splines for CXCL17P (3 knots)
-spline_cov = rcspline.eval(df_clean$CXCL17P, nk = 3, norm = 0)
-knots = attr(spline_cov, "knots")
-
-# 6b. Fix Proportional Hazards: Stratify violators and refit the Cox model
-cox_model_fixed = coxph(Surv(OS, Death) ~ CXCL17P + rcspline.eval(CXCL17P, knots, norm = 0) + 
-                          AFP + AST + 
-                          strata(Tumormultiplicity) + 
-                          strata(Tumorsize) + 
-                          strata(Vascularinvasion) + 
-                          strata(TNM) + 
-                          strata(BCLC), 
-                        data = df_clean)
+# 4b. Fit Stratified Cox Model with 3-Knot Restricted Cubic Spline
+cox_model_fixed <- coxph(
+  Surv(OS, Death) ~ CXCL17P + rcspline.eval(CXCL17P, knots, norm = 0) + 
+    AFP + AST + 
+    strata(Tumormultiplicity) + 
+    strata(Tumorsize) + 
+    strata(Vascularinvasion) + 
+    strata(TNM) + 
+    strata(BCLC), 
+  data = df_clean
+)
 
 summary(cox_model_fixed)
 
+# Extract adjusted HRs and 95% CIs for unstratified covariates (AFP and AST)
 tbl_regression(cox_model_fixed, exponentiate = TRUE)
 
-# 6c. Updated Contrast: 75th vs 25th Percentile (Spline Adjusted)
-cxcl_q3vq1 = rbind(
+# 4c. Primary Contrast: 75th vs 25th Percentile of CXCL17P (Spline Adjusted)
+q1_cxcl <- quantile(df_clean$CXCL17P, 0.25)
+q3_cxcl <- quantile(df_clean$CXCL17P, 0.75)
+
+cxcl_q3vq1 <- rbind(
   c(q3_cxcl - q1_cxcl, 
     rcspline.eval(q3_cxcl, knots, norm = 0) - rcspline.eval(q1_cxcl, knots, norm = 0), 
     0, 0)
 )
 
-cxcl_contrasts = esticon(cox_model_fixed, cxcl_q3vq1, conf.int = TRUE)
-cxcl_contrasts
+cxcl_contrasts <- esticon(cox_model_fixed, cxcl_q3vq1, conf.int = TRUE)
+print(cxcl_contrasts)
 
-print("--- ADJUSTED FINAL HAZARD RATIO ---")
-paste0("Adjusted HR for 75th vs 25th Percentile: ",
-       round(exp(cxcl_contrasts$estimate), 2), " (",
+# Adjusted Hazard Ratios
+paste0("Adjusted HR: ",
+       round(exp(cxcl_contrasts$estimate), 2), " (95% CI: ",
        round(exp(cxcl_contrasts$lwr), 2), ", ",
-       round(exp(cxcl_contrasts$upr), 2), ")")
+       round(exp(cxcl_contrasts$upr), 2), "), p = ",
+       round(cxcl_contrasts$p.value, 3))
 
-# 6d. Updated Visuals: Adjusted Survival Curves
-new_data_plot_fixed = data.frame(
-  CXCL17P = c(q1_cxcl, q3_cxcl),
-  AFP = factor(c(1, 1), levels = levels(df_clean$AFP)),
-  AST = factor(c(1, 1), levels = levels(df_clean$AST)),
-  Tumormultiplicity = factor(c(1, 1), levels = levels(df_clean$Tumormultiplicity)),
-  Tumorsize = factor(c(1, 1), levels = levels(df_clean$Tumorsize)),
-  Vascularinvasion = factor(c(0, 0), levels = levels(df_clean$Vascularinvasion)),
-  TNM = factor(c(1, 1), levels = levels(df_clean$TNM)),
-  BCLC = factor(c(1, 1), levels = levels(df_clean$BCLC))
+# ------------------------------------------------------------------------------
+# 5. FIGURE 1: COVARIATE-ADJUSTED SURVIVAL CURVES (FINAL MODEL)
+# ------------------------------------------------------------------------------
+# Held constant at reference clinical categories
+new_data_plot_fixed <- data.frame(
+  CXCL17P           = c(q1_cxcl, q3_cxcl),
+  AFP               = factor(c("<= 25 ng/mL", "<= 25 ng/mL"), levels = levels(df_clean$AFP)),
+  AST               = factor(c("<= 42 U/L", "<= 42 U/L"), levels = levels(df_clean$AST)),
+  Tumormultiplicity = factor(c("Solitary", "Solitary"), levels = levels(df_clean$Tumormultiplicity)),
+  Tumorsize         = factor(c("<= 5 cm", "<= 5 cm"), levels = levels(df_clean$Tumorsize)),
+  Vascularinvasion  = factor(c("Absent", "Absent"), levels = levels(df_clean$Vascularinvasion)),
+  TNM               = factor(c("Stage I-II", "Stage I-II"), levels = levels(df_clean$TNM)),
+  BCLC              = factor(c("Stage 0-A", "Stage 0-A"), levels = levels(df_clean$BCLC))
 )
 
-surv_avg_fixed = survfit(cox_model_fixed, newdata = new_data_plot_fixed)
+surv_avg_fixed <- survfit(cox_model_fixed, newdata = new_data_plot_fixed)
 
-ggsurvplot(surv_avg_fixed, data = new_data_plot_fixed,
-           legend.title = "CXCL17P Percentile",
-           legend.labs = c("25th Percentile", "75th Percentile"))
+# Figure 1
+ggsurvplot(
+  surv_avg_fixed, 
+  data = new_data_plot_fixed,
+  xlab = "Overall Survival Time (Months)",
+  ylab = "Adjusted Survival Probability",
+  legend.title = "Peritumoral CXCL17",
+  legend.labs = c("25th Percentile (15 cells/MP)", "75th Percentile (142 cells/MP)"),
+  ggtheme = theme_classic()
+)
 
-
-# ---------------------------------------------------------
-# 7. APPENDIX DIAGNOSTICS (FINAL MODEL)
-# ---------------------------------------------------------
-
-# 7a. Final Proportional Hazards Assumption (Schoenfeld Residuals)
-# Note: This will only plot the unstratified variables (CXCL17, AFP, AST)
+# ------------------------------------------------------------------------------
+# 6. APPENDIX DIAGNOSTICS (FINAL MODEL)
+# ------------------------------------------------------------------------------
+# 6a. Appendix Figure 2: Final Proportional Hazards Check (Schoenfeld Residuals)
 ph_check_fixed <- cox.zph(cox_model_fixed)
-print("--- FINAL SCHOENFELD RESIDUALS ---")
+
+# Rename the long spline term so the y-axis label fits cleanly
+rownames(ph_check_fixed$table)[2] <- "CXCL17P Spline"
+colnames(ph_check_fixed$y)[2]     <- "CXCL17P Spline"
+
+print("--- FINAL SCHOENFELD RESIDUALS TEST ---")
 print(ph_check_fixed)
 
-# Print the plot to the Viewer pane for manual export
-ggcoxzph(ph_check_fixed)
+# Plot with clean labels (optional: font.y = 10 keeps axis labels compact)
+ggcoxzph(ph_check_fixed, font.y = 10, font.main = 11)
 
-# 7b. Final Linearity Assumption (Martingale Residuals)
-# Plotting the continuous variable against a null model's residuals to show necessity of splines
-ggcoxfunctional(Surv(OS, Death) ~ CXCL17P, data = df_clean)
+# 6b. Appendix Figure 3: Outliers Check (Deviance Residuals on Final Model)
+ggcoxdiagnostics(
+  cox_model_fixed, 
+  type = "deviance", 
+  ox.scale = "linear.predictions",
+  title = "Deviance Residuals vs. Linear Predictions (Final Model)"
+)
+
+# 6c. Appendix Figure 4: Influential Observations Check (DFBETAS on Final Model)
+ggcoxdiagnostics(
+  cox_model_fixed, 
+  type = "dfbetas", 
+  ox.scale = "observation.id",
+  title = "DFBETAS Influential Observations Check (Final Model)"
+)
